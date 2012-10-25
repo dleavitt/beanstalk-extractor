@@ -1,23 +1,3 @@
-require "rubygems"
-require "bundler"
-require "yaml"
-Bundler.require
-
-def run
-  settings = YAML.load_file('settings.yml')
-  repo_lister = RepoLister.new(settings["creds"])
-  repo_lister.repos[0...1].each do |repo|
-    $started << repo.name
-    grabber = RepoGrabber.new(repo)
-    grabber.setup
-    grabber.sync
-    
-    migrator = RepoMigrator.new(repo)
-    migrator.setup
-    migrator.migrate
-  end
-end
-
 $started, $complete = %w(started.txt complete.txt).map do |filename|
   Set.new(File.exists?(filename) ? File.open(filename).read.split("\n") : [])
 end
@@ -27,15 +7,18 @@ class RepoLister
   
   attr_accessor :min_age
   
-  def initialize(creds, min_age='2012-06-01'.to_date)
+  def initialize(creds)
     Base.setup(creds)
-    self.min_age = min_age
   end
   
-  def repos
+  def find(name)
+    Repository.find(:all).find { |r| r.name == name } or raise "No repo '#{name}' found"
+  end
+  
+  def repos(min_age='2012-06-01'.to_date)
     @repos ||= Repository.find(:all)
       .find_all { |r| r.vcs == "subversion" }
-      .find_all { |r| r.last_commit_at < min_age }
+      .find_all { |r| min_age ? r.last_commit_at < min_age : true }
       .reject   { |r| ($started | $complete).include? r.name }
       .sort_by(&:last_commit_at)
   end
@@ -53,11 +36,11 @@ class Repo
   end
   
   def svn_dir
-    File.join(File.expand_path(File.dirname(__FILE__)), 'svn', repo.name)
+    File.expand_path(File.join(File.dirname(__FILE__), '..', 'svn', repo.name))
   end
   
   def git_dir
-    File.join(File.expand_path(File.dirname(__FILE__)), 'git', repo.name)
+    File.expand_path(File.join(File.dirname(__FILE__), '..', 'git', repo.name))
   end
   
   private
@@ -65,6 +48,25 @@ class Repo
   def cmd(cmd)
     puts cmd
     `#{cmd}`
+  end
+end
+
+class RepoMigrator < Repo
+  def migrate
+    grab
+    convert
+  end
+  
+  def grab
+    grabber = RepoGrabber.new(repo)
+    grabber.setup
+    grabber.sync
+  end
+  
+  def convert
+    converter = RepoConverter.new(repo)
+    converter.setup
+    converter.convert
   end
 end
 
@@ -82,21 +84,21 @@ class RepoGrabber < Repo
   end
 end
 
-class RepoMigrator < Repo
+class RepoConverter < Repo
   def setup
     cmd("mkdir -p  #{git_dir}")
   end
   
-  def migrate
+  def convert
     cmd("cd #{git_dir} && svn2git #{local_uri} #{structure} -v")
   end
   
   def structure
     if svn_list.include?("trunk/")
       flags = ["--trunk trunk"]
-      flags << svn_list.include?("branches") ? "--branches branches" 
-                                             : "--nobranches"
-      flags << svn_list.include?("tags") ? "--tags tags" : "--notags"
+      flags << (svn_list.include?("branches") ? "--branches branches" 
+                                             : "--nobranches")
+      flags << (svn_list.include?("tags") ? "--tags tags" : "--notags")
       flags.join(" ")
     else
       "--nobranches --notags --rootistrunk"
@@ -116,5 +118,3 @@ end
 #     @creds = creds
 #   end
 # end
-
-run
