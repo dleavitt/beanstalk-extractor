@@ -9,8 +9,15 @@ class BE < Thor
   desc "migrate REPO", "do full migration on a repo repo"
   def migrate(name)
     repo = repo_lister.find(name)
-    ex = RepoMigrator.new(repo)
-    ex.migrate
+    r = Repo.new(repo.name, repo.attributes)
+    r.grab
+    r.convert
+  end
+  
+  desc "delete REPO", "deletes the local stuff from a migrated repo"
+  def delete(name)
+    r = Repo.new(name)
+    r.delete_svn
   end
   
   desc "batch_migrate", "migrates a bunch of repos"
@@ -23,7 +30,6 @@ class BE < Thor
       Thread.new do
         until queue.empty?
           repo = queue.pop(true) rescue nil
-          $started << repo.name
           ex = RepoMigrator.new(repo)
           ex.migrate
         end
@@ -38,10 +44,15 @@ class BE < Thor
     pp repo_lister.repos(nil)
   end
   
+  desc "console", "run a console in this context"
+  def console
+    binding.pry
+  end
+  
   no_tasks do
     def repo_lister
       settings = YAML.load_file('settings.yml')
-      repo_lister = RepoLister.new(settings["beanstalk"])
+      repo_lister = Repo::BeanstalkList.new(settings["beanstalk"])
     end
   end
 end

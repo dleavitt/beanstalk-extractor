@@ -1,99 +1,93 @@
-$started, $complete = %w(started.txt complete.txt).map do |filename|
-  Set.new(File.exists?(filename) ? File.open(filename).read.split("\n") : [])
-end
-
-class RepoLister
-  include Beanstalk::API
-  
-  attr_accessor :min_age
-  
-  def initialize(creds)
-    Base.setup(creds)
-  end
-  
-  def find(name)
-    Repository.find(:all).find { |r| r.name == name } or raise "No repo '#{name}' found"
-  end
-  
-  def repos(min_age='2012-06-01'.to_date)
-    @repos ||= Repository.find(:all)
-      .find_all { |r| r.vcs == "subversion" }
-      .find_all { |r| min_age ? r.last_commit_at < min_age : true }
-      .reject   { |r| ($started | $complete).include? r.name }
-      .sort_by(&:last_commit_at)
-  end
-end
+# $started, $complete = %w(started.txt complete.txt).map do |filename|
+#   Set.new(File.exists?(filename) ? File.open(filename).read.split("\n") : [])
+# end
 
 class Repo
-  attr_accessor :repo
+  attr_accessor :name, :svn_url
   
-  def initialize(repo)
-    @repo = repo
+  def initialize(name, bs_data = nil)
+    @name = name
+    @svn_url = bs_data["repository_url"] if bs_data
+    @bs_data = bs_data
   end
   
-  def local_uri
-    "file://#{svn_dir}"
+  # Retrieves the repo from Beanstalk and creates a local copy in the svn 
+  # directory
+  def grab
+    raise "Must supply 'svn_url' in order to grab repo" unless svn_url
+    
+    set_state "svn:started"
+    
+    cmd "mkdir -p #{svn_dir}"
+    cmd "svnadmin create #{svn_dir}"
+    cmd "echo '#!/bin/sh\n\nexit 0' > #{svn_dir}/hooks/pre-revprop-change"
+    cmd "chmod +x #{svn_dir}/hooks/pre-revprop-change"
+    cmd "svnsync init #{local_uri} #{svn_url}"
+    cmd "svnsync sync #{local_uri}"
+    
+    set_state "svn:complete"
+    self
   end
   
-  def svn_dir
-    File.expand_path(File.join(File.dirname(__FILE__), '..', 'svn', repo.name))
+  # Creates a local git repo from the local svn repo created by grab
+  def convert
+    set_state "git:started"
+    
+    cmd "mkdir -p  #{git_dir}"
+    cmd "cd #{git_dir} && svn2git #{local_uri} #{git2svn_flags} -v"
+    
+    set_state "git:complete"
+    self
   end
   
-  def git_dir
-    File.expand_path(File.join(File.dirname(__FILE__), '..', 'git', repo.name))
+  def set_state(state)
+    if state
+      File.open(state_file, "w") { |f| f.write(state) } 
+    else
+      File.delete(state_file)
+    end
+  end
+  
+  def state
+    File.exists?(state_file) ? File.read(state_file) : nil
+  end
+  
+  def delete_svn
+    delete_git
+    cmd "rm -rf #{svn_dir}"
+    set_state nil
+  end
+  
+  def delete_git
+    cmd "rm -rf #{git_dir}"
+    set_state "svn:complete"
   end
   
   private
   
-  def cmd(cmd)
-    puts cmd
-    `#{cmd}`
-  end
-end
-
-class RepoMigrator < Repo
-  def migrate
-    grab
-    convert
+  # local svn repo uri
+  def local_uri
+    "file://#{svn_dir}"
   end
   
-  def grab
-    grabber = RepoGrabber.new(repo)
-    grabber.setup
-    grabber.sync
+  # svn dir path
+  def svn_dir
+    File.expand_path(File.join(File.dirname(__FILE__), '..', 'svn', name))
   end
   
-  def convert
-    converter = RepoConverter.new(repo)
-    converter.setup
-    converter.convert
-  end
-end
-
-class RepoGrabber < Repo
-  def setup
-    cmd("mkdir -p #{svn_dir}")
-    cmd("svnadmin create #{svn_dir}")
-    cmd("echo '#!/bin/sh\n\nexit 0' > #{svn_dir}/hooks/pre-revprop-change")
-    cmd("chmod +x #{svn_dir}/hooks/pre-revprop-change")
+  # git dir path
+  def git_dir
+    File.expand_path(File.join(File.dirname(__FILE__), '..', 'git', name))
   end
   
-  def sync
-    cmd("svnsync init #{local_uri} #{repo.repository_url}")
-    cmd("svnsync sync #{local_uri}")
-  end
-end
-
-class RepoConverter < Repo
-  def setup
-    cmd("mkdir -p  #{git_dir}")
+  # name of the file where repo state is stored
+  def state_file
+    fname = "be_repo_#{name}.txt"
+    File.expand_path(File.join(File.dirname(__FILE__), '..', 'db', fname))
   end
   
-  def convert
-    cmd("cd #{git_dir} && svn2git #{local_uri} #{structure} -v")
-  end
-  
-  def structure
+  # flags to pass git2svn, depending on the directory structure
+  def git2svn_flags
     if svn_list.include?("trunk/")
       flags = ["--trunk trunk"]
       flags << (svn_list.include?("branches") ? "--branches branches" 
@@ -105,16 +99,36 @@ class RepoConverter < Repo
     end
   end
   
+  # run svn list
   def svn_list
     cmd("svn list #{local_uri}").split("\n")
   end
+  
+  # run a shell command
+  def cmd(cmd)
+    puts cmd
+    `#{cmd}`
+  end
+  
+  class BeanstalkList
+    include Beanstalk::API
+  
+    attr_accessor :min_age
+  
+    def initialize(creds)
+      Base.setup(creds)
+    end
+  
+    def find(name)
+      Repository.find(:all).find { |r| r.name == name } or raise "No repo '#{name}' found"
+    end
+  
+    def repos(min_age='2012-06-01'.to_date)
+      @repos ||= Repository.find(:all)
+        .find_all { |r| r.vcs == "subversion" }
+        .find_all { |r| min_age ? r.last_commit_at < min_age : true }
+        .sort_by(&:last_commit_at)
+        .map { |r| Repo.new(r.name, r.attributes) }
+    end
+  end
 end
-
-# class ArchiveGenerator
-#   attr_accessor :repo, :creds
-#   
-#   def initialize(creds, repo)
-#     @repo = repo
-#     @creds = creds
-#   end
-# end
