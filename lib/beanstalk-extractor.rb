@@ -40,6 +40,10 @@ class Repo
     self
   end
   
+  def push
+    
+  end
+  
   def set_state(state)
     if state
       File.open(state_file, "w") { |f| f.write(state) } 
@@ -108,6 +112,35 @@ class Repo
   def cmd(cmd)
     puts cmd
     `#{cmd}`
+  end
+  
+  class GitlabAPI
+    include HTTParty
+    
+    format :json
+    debug_output $stdout
+    
+    def self.init(options)
+      base_uri "http://#{options[:host]}/api/v2"
+      default_params private_token: options[:token]
+    end
+    
+    def self.project_set
+      @project_set ||= get_projects.map { |prj| prj["name"] }
+    end
+  
+    def self.get_projects
+      get('/projects', query: {per_page: 500})
+    end
+  
+    def self.create_project(name, desc)
+      post '/projects', body: {
+        name: name, 
+        description: desc,
+        issues_enabled: false,
+        wiki_enabled: false,
+      }
+    end
   end
   
   class BeanstalkList
