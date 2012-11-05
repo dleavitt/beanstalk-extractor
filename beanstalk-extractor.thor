@@ -8,10 +8,12 @@ require "./lib/beanstalk-extractor"
 class BE < Thor
   desc "migrate REPO", "do full migration on a repo repo"
   def migrate(name)
+    init_gitlab
     repo = repo_lister.find(name)
-    r = Repo.new(repo.name, repo.attributes)
+    r = Repo.new(repo.name, repo)
     r.grab
     r.convert
+    r.create_remote
   end
   
   desc "delete REPO", "deletes the local stuff from a migrated repo"
@@ -22,6 +24,7 @@ class BE < Thor
   
   desc "batch_migrate", "migrates a bunch of repos"
   def batch_migrate
+    init_gitlab
     queue = Queue.new
     
     repo_lister.repos.each { |r| queue << r }
@@ -30,8 +33,7 @@ class BE < Thor
       Thread.new do
         until queue.empty?
           repo = queue.pop(true) rescue nil
-          ex = RepoMigrator.new(repo)
-          ex.migrate
+          migrate(repo)
         end
       end
     end
@@ -49,7 +51,19 @@ class BE < Thor
     binding.pry
   end
   
+  desc "init gitlab", "blah"
+  def init_gitlab
+    return if @gitlab_inited
+    
+    settings = YAML.load_file('settings.yml')
+    Repo::GitlabAPI.init settings["gitlab"]
+    Repo::GitlabAPI.project_set
+    Repo.base_git_url = "git@gitlab.dev.hyfn.com"
+    @gitlab_inited = true
+  end
+  
   no_tasks do
+    
     def repo_lister
       settings = YAML.load_file('settings.yml')
       repo_lister = Repo::BeanstalkList.new(settings["beanstalk"])

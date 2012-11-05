@@ -40,11 +40,24 @@ class Repo
     self
   end
   
+  # Create the project in gitlabhq
+  def create_remote(api)
+    set_state "gl:started"
+    begin
+      raise "repo exists #{name}" if Gitlab.project_set.include? name
+      Gitlab.create_project(name, "Full SVN dump of #{name}")
+    rescue => ex
+      bannerize "Create remote #{name} failed with #{ex}"
+    end
+  end
+  
+  # Push the local git repo to gitlabhq
   def push
-    
+    # set_state "gl:complete"
   end
   
   def set_state(state)
+    cmd "mkdir -p db"
     if state
       File.open(state_file, "w") { |f| f.write(state) } 
     else
@@ -54,6 +67,18 @@ class Repo
   
   def state
     File.exists?(state_file) ? File.read(state_file) : nil
+  end
+  
+  def self.base_git_url
+    @base_git_url
+  end
+  
+  def self.base_git_url=(url)
+    @base_git_url = url
+  end
+  
+  def git_url
+    "#{self.class.base_git_url}:#{name}"
   end
   
   def delete_svn
@@ -114,6 +139,14 @@ class Repo
     `#{cmd}`
   end
   
+  def bannerize(message)
+    puts ""
+    puts "##################################################"
+    puts message
+    puts "##################################################"
+    puts ""
+  end
+  
   class GitlabAPI
     include HTTParty
     
@@ -143,23 +176,38 @@ class Repo
     end
   end
   
-  class BeanstalkList
-    include Beanstalk::API
+  class BeanstalkAPI
+    include HTTParty
   
+    format :json
+    debug_output $stdout
+  
+    def self.init(options)
+      base_uri "https://#{options[:domain]}.beanstalkapp.com/api"
+      basic_auth options[:login], options[:password]
+    end
+  
+    def self.get_repos
+      get("/repositories.json").map { |r| Hashie::Mash.new(r["repository"]) }
+    end
+  end
+  
+  class BeanstalkList
     attr_accessor :min_age
   
     def initialize(creds)
-      Base.setup(creds)
+      BeanstalkAPI.init(creds)
     end
   
     def find(name)
-      Repository.find(:all).find { |r| r.name == name } or raise "No repo '#{name}' found"
+      BeanstalkAPI.get_repos.find { |r| r.name == name } or raise "No repo '#{name}' found"
     end
   
-    def repos(min_age='2012-06-01'.to_date)
-      @repos ||= Repository.find(:all)
+    def repos(min_age=nil)
+      min_age ||= Date.parse('2012-06-01')
+      @repos ||= BeanstalkAPI.get_repos
         .find_all { |r| r.vcs == "subversion" }
-        .find_all { |r| min_age ? r.last_commit_at < min_age : true }
+        .find_all { |r| min_age ? Date.parse(r.last_commit_at) < min_age : true }
         .sort_by(&:last_commit_at)
         .map { |r| Repo.new(r.name, r.attributes) }
     end
