@@ -6,14 +6,12 @@ Bundler.require
 require "./lib/beanstalk-extractor"
 
 class BE < Thor
+  
   desc "migrate REPO", "do full migration on a repo repo"
   def migrate(name)
     init_gitlab
-    repo = repo_lister.find(name)
-    r = Repo.new(repo.name, repo)
-    r.grab
-    r.convert
-    r.create_remote
+    repo = name.is_a?(String) ? repo_lister.find(name) : name
+    repo.migrate
   end
   
   desc "delete REPO", "deletes the local stuff from a migrated repo"
@@ -48,21 +46,21 @@ class BE < Thor
   
   desc "console", "run a console in this context"
   def console
+    init_gitlab
     binding.pry
   end
   
-  desc "init gitlab", "blah"
-  def init_gitlab
-    return if @gitlab_inited
-    
-    settings = YAML.load_file('settings.yml')
-    Repo::GitlabAPI.init settings["gitlab"]
-    Repo::GitlabAPI.project_set
-    Repo.base_git_url = "git@gitlab.dev.hyfn.com"
-    @gitlab_inited = true
-  end
-  
   no_tasks do
+    
+    def init_gitlab
+      return if @gitlab_inited
+    
+      settings = YAML.load_file('settings.yml')
+      Repo::GitlabAPI.init settings["gitlab"]
+      Repo::GitlabAPI.project_set
+      Repo.base_git_url = "git@gitlab.dev.hyfn.com"
+      @gitlab_inited = true
+    end
     
     def repo_lister
       settings = YAML.load_file('settings.yml')

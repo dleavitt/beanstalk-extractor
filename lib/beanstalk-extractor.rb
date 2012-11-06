@@ -9,6 +9,23 @@ class Repo
     @name = name
     @svn_url = bs_data["repository_url"] if bs_data
     @bs_data = bs_data
+    bannerize("Initialized repo #{name}@#{state}")
+  end
+  
+  def migrate
+    case state
+    when "svn:complete"
+      convert
+      push
+    when "git:complete", "gl:started"
+      push
+    when "gl:complete"
+      bannerize "#{name} is already done"
+    else
+      grab
+      convert
+      push
+    end
   end
   
   # Retrieves the repo from Beanstalk and creates a local copy in the svn 
@@ -41,11 +58,11 @@ class Repo
   end
   
   # Create the project in gitlabhq
-  def create_remote(api)
+  def create_remote
     set_state "gl:started"
     begin
-      raise "repo exists #{name}" if Gitlab.project_set.include? name
-      Gitlab.create_project(name, "Full SVN dump of #{name}")
+      raise "repo exists #{name}" if GitlabAPI.project_set.include? name
+      GitlabAPI.create_project(name, "Full SVN dump of #{name}")
     rescue => ex
       bannerize "Create remote #{name} failed with #{ex}"
     end
@@ -53,7 +70,17 @@ class Repo
   
   # Push the local git repo to gitlabhq
   def push
-    # set_state "gl:complete"
+    create_remote
+    begin
+      raise "repo does not exist" unless GitlabAPI.project_set.include? name
+      puts "#{name} starting push"
+      cmd "cd #{git_dir} && git remote add origin #{git_url}"
+      cmd "cd #{git_dir} && git push origin master"
+      puts "#{name} push complete"
+      set_state "gl:complete"
+    rescue => ex
+      bannerize "#{name} failed with #{ex}"
+    end
   end
   
   def set_state(state)
@@ -151,7 +178,7 @@ class Repo
     include HTTParty
     
     format :json
-    debug_output $stdout
+    # debug_output $stdout
     
     def self.init(options)
       base_uri "http://#{options[:host]}/api/v2"
@@ -173,6 +200,7 @@ class Repo
         issues_enabled: false,
         wiki_enabled: false,
       }
+      @project_set = nil
     end
   end
   
@@ -180,7 +208,7 @@ class Repo
     include HTTParty
   
     format :json
-    debug_output $stdout
+    # debug_output $stdout
   
     def self.init(options)
       base_uri "https://#{options[:domain]}.beanstalkapp.com/api"
@@ -209,7 +237,7 @@ class Repo
         .find_all { |r| r.vcs == "subversion" }
         .find_all { |r| min_age ? Date.parse(r.last_commit_at) < min_age : true }
         .sort_by(&:last_commit_at)
-        .map { |r| Repo.new(r.name, r.attributes) }
+        .map { |r| Repo.new(r.name, r) }
     end
   end
 end
