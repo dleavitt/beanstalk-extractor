@@ -1,7 +1,3 @@
-# $started, $complete = %w(started.txt complete.txt).map do |filename|
-#   Set.new(File.exists?(filename) ? File.open(filename).read.split("\n") : [])
-# end
-
 class Repo
   attr_accessor :name, :svn_url
   
@@ -96,6 +92,20 @@ class Repo
     File.exists?(state_file) ? File.read(state_file) : nil
   end
   
+  def self.incomplete_migrations
+    states.find_all { |k,v| v == "gl:started" || v == "git:complete" }
+          .map      { |a| Repo.new(a[0]) }
+  end
+  
+  def self.states
+    Hash[migrations.map { |f| [File.basename(f)[8..-5], File.read(f)] }]
+  end
+  
+  def self.migrations
+    dir = File.expand_path(File.join(File.dirname(__FILE__), '..', 'db'))
+    Dir[File.join(dir, "be_repo_*.txt")]
+  end
+  
   def self.base_git_url
     @base_git_url
   end
@@ -174,6 +184,32 @@ class Repo
     puts ""
   end
   
+  class MigrationQueue
+    attr_reader :thread_count, :queue
+    
+    def initialize(thread_count = 12)
+      @thread_count = thread_count
+      @queue = Queue.new
+    end
+    
+    def add(repo)
+      @queue << repo
+    end
+    
+    def start
+      threads = @thread_count.times.map do
+        Thread.new do
+          until @queue.empty?
+            repo = @queue.pop(true) rescue nil
+            repo.migrate
+          end
+        end
+      end
+      threads.map(&:join)
+    end
+    
+  end
+  
   class GitlabAPI
     include HTTParty
     
@@ -194,13 +230,16 @@ class Repo
     end
   
     def self.create_project(name, desc)
-      post '/projects', body: {
+      
+      r = post '/projects', body: {
         name: name, 
         description: desc,
         issues_enabled: false,
         wiki_enabled: false,
       }
+      p r
       @project_set = nil
+      r
     end
   end
   
